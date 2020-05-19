@@ -165,16 +165,20 @@ services:
   nginx:
     << : *restart_policy
     ports:
-      - '9000:80/tcp'
+      - '80:80/tcp'
+      - '443:443'
     image: "nginx:1.16"
     volumes:
       - type: bind
         read_only: true
         source: ./nginx
         target: /etc/nginx
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
     depends_on:
       - web
       - relay
+    command: "/bin/sh -c 'while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g \"daemon off;\"'"
   relay:
     << : *restart_policy
     image: "getsentry/relay:latest"
@@ -183,9 +187,17 @@ services:
         read_only: true
         source: ./relay
         target: /work/.relay
+      - ./certbot:/var/www/certbot
+      - ./letsencrypt:/etc/letsencrypt
     depends_on:
       - kafka
       - redis
+  certbot:
+    image: certbot/certbot
+    volumes:
+      - ./certbot/www:/var/www/certbot
+      - ./certbot/conf:/etc/letsencrypt
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
 volumes:
   sentry-data:
     external: true

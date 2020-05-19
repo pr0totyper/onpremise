@@ -55,6 +55,19 @@ If you'd like to protect your Sentry install with SSL/TLS, there are
 fantastic SSL/TLS proxies like [HAProxy](http://www.haproxy.org/)
 and [Nginx](http://nginx.org/). You'll likely want to add this service to your `docker-compose.yml` file.
 
+Or modify configuration:
+
+Add domains and email addresses to init-letsencrypt.sh
+Replace all occurrences of YOURDOMAIN.COM with primary domain (the first one you added to init-letsencrypt.sh) in nginx/nginx.conf
+
+Run the init script:
+
+        ./init-letsencrypt.sh
+
+Run the server:
+
+        docker-compose up
+
 ## Updating Sentry
 
 _You need to be on at least Sentry 9.1.2 to be able to upgrade automatically to the latest version. If you are not, upgrade to 9.1.2 first by checking out the [9.1.2 tag](https://github.com/getsentry/onpremise/tree/9.1.2) on this repo._

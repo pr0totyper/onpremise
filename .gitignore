@@ -78,3 +78,7 @@ sentry/sentry.conf.py
 sentry/config.yml
 sentry/requirements.txt
 relay/credentials.json
+
+# SSL certbot configuration
+certbot/*
+!certbot/.gitkeep
