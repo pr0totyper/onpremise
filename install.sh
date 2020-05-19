@@ -65,10 +65,14 @@ if [ "$RAM_AVAILABLE_IN_DOCKER" -lt "$MIN_RAM" ]; then
 fi
 
 #SSE4.2 required by Clickhouse (https://clickhouse.yandex/docs/en/operations/requirements/)
-SUPPORTS_SSE42=$(docker run --rm busybox grep -c sse4_2 /proc/cpuinfo || :);
-if (($SUPPORTS_SSE42 == 0)); then
+# On KVM, cpuinfo could falsely not report SSE 4.2 support, so skip the check. https://github.com/ClickHouse/ClickHouse/issues/20#issuecomment-226849297
+IS_KVM=$(docker run --rm busybox grep -c 'Common KVM processor' /proc/cpuinfo || :)
+if (($IS_KVM == 0)); then
+  SUPPORTS_SSE42=$(docker run --rm busybox grep -c sse4_2 /proc/cpuinfo || :)
+  if (($SUPPORTS_SSE42 == 0)); then
     echo "FAIL: The CPU your machine is running on does not support the SSE 4.2 instruction set, which is required for one of the services Sentry uses (Clickhouse). See https://git.io/JvLDt for more info."
     exit 1
+  fi
 fi
 
 # Clean up old stuff and ensure nothing is working while we install/update
@@ -103,6 +107,45 @@ if grep -xq "system.secret-key: '!!changeme!!'" $SENTRY_CONFIG_YML ; then
     echo "Secret key written to $SENTRY_CONFIG_YML"
 fi
 
+replace_tsdb() {
+    if (
+        [ -f "$SENTRY_CONFIG_PY" ] &&
+        ! grep -xq 'SENTRY_TSDB = "sentry.tsdb.redissnuba.RedisSnubaTSDB"' "$SENTRY_CONFIG_PY"
+    ); then
+        tsdb_settings="SENTRY_TSDB = \"sentry.tsdb.redissnuba.RedisSnubaTSDB\"
+
+# Automatic switchover 90 days after $(date). Can be removed afterwards.
+SENTRY_TSDB_OPTIONS = {\"switchover_timestamp\": $(date +%s) + (90 * 24 * 3600)}"
+
+        if grep -q 'SENTRY_TSDB_OPTIONS = ' "$SENTRY_CONFIG_PY"; then
+            echo "Not attempting automatic TSDB migration due to presence of SENTRY_TSDB_OPTIONS"
+        else
+            echo "Attempting to automatically migrate to new TSDB"
+            # Escape newlines for sed
+            tsdb_settings="${tsdb_settings//$'\n'/\\n}"
+            cp "$SENTRY_CONFIG_PY" "$SENTRY_CONFIG_PY.bak"
+            sed -i -e "s/^SENTRY_TSDB = .*$/${tsdb_settings}/g" "$SENTRY_CONFIG_PY" || true
+
+            if grep -xq 'SENTRY_TSDB = "sentry.tsdb.redissnuba.RedisSnubaTSDB"' "$SENTRY_CONFIG_PY"; then
+                echo "Migrated TSDB to Snuba. Old configuration file backed up to $SENTRY_CONFIG_PY.bak"
+                return
+            fi
+
+            echo "Failed to automatically migrate TSDB. Reverting..."
+            mv "$SENTRY_CONFIG_PY.bak" "$SENTRY_CONFIG_PY"
+            echo "$SENTRY_CONFIG_PY restored from backup."
+        fi
+
+        echo "WARN: Your Sentry configuration uses a legacy data store for time-series data. Remove the options SENTRY_TSDB and SENTRY_TSDB_OPTIONS from $SENTRY_CONFIG_PY and add:"
+        echo ""
+        echo "$tsdb_settings"
+        echo ""
+        echo "For more information please refer to https://github.com/getsentry/onpremise/pull/430"
+    fi
+}
+
+replace_tsdb
+
 echo ""
 echo "Fetching and updating Docker images..."
 echo ""
@@ -121,11 +164,8 @@ $dc build --force-rm --parallel
 echo ""
 echo "Docker images built."
 
-echo "Bootstrapping Snuba..."
-# `bootstrap` is for fresh installs, and `migrate` is for existing installs
-# Running them both for both cases is harmless so we blindly run them
+echo "Bootstrapping and migrating Snuba..."
 $dcr snuba-api bootstrap --force
-$dcr snuba-api migrate
 echo ""
 
 # Very naively check whether there's an existing sentry-postgres volume and the PG version in it
